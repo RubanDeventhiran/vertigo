@@ -2,9 +2,13 @@ package vertigo
 
 import (
 	"crypto/tls"
-	"fmt"
 	"io"
 	"net"
+	"errors"
+)
+
+var (
+	SslNotSupported = errors.New("SSL not available on this server")
 )
 
 type ConnectionInfo struct {
@@ -18,17 +22,15 @@ type Connection struct {
 	socket net.Conn
 }
 
-func Connect(info *ConnectionInfo) (*Connection, error) {
+func Connect(info *ConnectionInfo) (connection *Connection, err error) {
 	socket, err := net.Dial("tcp", info.Address)
 	if err != nil {
 		return nil, err
 	}
 
-	var connection Connection
-
 	if info.SslConfig != nil {
 		sslRequest := BuildMessage(0)
-		sslRequest.Write(uint32(80877103))
+		sslRequest.Write(SslMagicNumber)
 		sslRequest.Send(socket)
 
 		sslResponse := make([]byte, 1)
@@ -40,21 +42,20 @@ func Connect(info *ConnectionInfo) (*Connection, error) {
 				return nil, tlsError
 			}
 
-			connection = Connection{sslSocket}
+			connection = &Connection{sslSocket}
 		} else {
 			socket.Close()
-			return nil, fmt.Errorf("SSL not available on this server")
+			return nil, SslNotSupported
 		}
 	} else {
-		connection = Connection{socket}
+		connection = &Connection{socket}
 	}
 
 	if err := connection.initConnection(info); err != nil {
 		socket.Close()
 		return nil, err
 	}
-
-	return &connection, nil
+	return
 }
 
 func (c *Connection) initConnection(info *ConnectionInfo) error {
@@ -65,16 +66,12 @@ func (c *Connection) initConnection(info *ConnectionInfo) error {
 	startupMessage.WriteNull()
 	c.sendMessage(startupMessage)
 
-	for {
-		nextMessage, err := c.receiveMessage()
+	for msg, err := c.receiveMessage(); msg.MessageType != 'Z'; msg, err = c.receiveMessage() {
 		if err != nil {
 			return err
 		}
-
-		if nextMessage.MessageType == 'Z' {
-			return nil
-		}
 	}
+	return nil
 }
 
 func (c *Connection) Query(sql string) error {
@@ -85,16 +82,12 @@ func (c *Connection) Query(sql string) error {
 		return err
 	}
 
-	for {
-		nextMessage, err := c.receiveMessage()
+	for msg, err := c.receiveMessage(); msg.MessageType != 'Z'; msg, err = c.receiveMessage() {
 		if err != nil {
 			return err
 		}
-
-		if nextMessage.MessageType == 'Z' {
-			return nil
-		}
 	}
+	return nil
 }
 
 func (c *Connection) Close() error {
@@ -105,16 +98,16 @@ func (c *Connection) Close() error {
 }
 
 func (c *Connection) sendMessage(m Message) error {
-	m.Printf()
+	m.Print()
 	return m.Send(c.socket)
 }
 
 func (c *Connection) receiveMessage() (*Message, error) {
-	nextMessage, err := ReadMessage(c.socket)
+	msg, err := ReadMessage(c.socket)
 	if err != nil {
 		return nil, err
-	} else {
-		nextMessage.Printf()
-		return nextMessage, nil
 	}
+
+	msg.Print()
+	return msg, nil
 }

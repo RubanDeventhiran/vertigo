@@ -8,6 +8,7 @@ import (
 )
 
 const ProtocolVersion = uint32(3 << 16)
+const SslMagicNumber  = uint32(80877103)
 
 type Message struct {
 	MessageType byte
@@ -36,7 +37,7 @@ func (m *Message) WriteNull() {
 	m.Write(byte(0))
 }
 
-func (m *Message) Printf() {
+func (m *Message) Print() {
 	fmt.Printf("%s %q\n", string(m.MessageType), m.content.Bytes())
 }
 
