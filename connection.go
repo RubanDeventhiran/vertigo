@@ -1,17 +1,18 @@
 package vertigo
 
 import (
-	"crypto/tls"
-	"errors"
 	"io"
 	"net"
+	"crypto/tls"
 	"sync"
 	"fmt"
+	"errors"
 )
 
 var (
 	SslNotSupported                  = errors.New("SSL not available on this server")
 	AuthenticationMethodNotSupported = errors.New("Authentication method not supported")
+	AuthenticationFailed             = errors.New("Authentication failed")
 )
 
 type ConnectionInfo struct {
@@ -23,71 +24,59 @@ type ConnectionInfo struct {
 }
 
 type Connection struct {
+	l sync.Mutex
+
 	socket     net.Conn
-	mutex      sync.Mutex
 	parameters map[string]string
 	backendPid uint32
 	backendKey uint32
 }
 
-func Connect(info *ConnectionInfo) (connection *Connection, err error) {
-	connection = &Connection{}
-	connection.mutex.Lock()
+func Connect(info *ConnectionInfo) (connection Connection, err error) {
+	connection = Connection{}
 	defer func() {
 		if err != nil {
-			connection.socket.Close()
+			connection.resetConnection()
 		}
-		connection.mutex.Unlock()
 	}()
 
-	socket, err := net.Dial("tcp", info.Address)
+	connection.l.Lock()
+	defer connection.l.Unlock()
+
+	connection.socket, err = net.Dial("tcp", info.Address)
 	if err != nil {
 		return
 	}
 
 	if info.SslConfig != nil {
-		sslRequest := SSLRequestMessage()
-		sslRequest.Send(socket)
+		connection.sendMessage(SSLRequestMessage())
 
 		sslResponse := make([]byte, 1)
-		io.ReadFull(socket, sslResponse)
+		io.ReadFull(connection.socket, sslResponse)
 		if sslResponse[0] == byte('S') {
-			sslSocket := tls.Client(socket, info.SslConfig)
-			if tlsError := sslSocket.Handshake(); tlsError != nil {
-				sslSocket.Close()
-				return nil, tlsError
+			tlsSocket := tls.Client(connection.socket, info.SslConfig)
+			connection.socket = tlsSocket
+			if err = tlsSocket.Handshake(); err != nil {
+				return
 			}
-			connection.socket = sslSocket
 		} else {
-			socket.Close()
-			return nil, SslNotSupported
+			err = SslNotSupported
+			return
 		}
-	} else {
-		connection.socket = socket
 	}
 
 	connection.parameters = make(map[string]string)
-
-	if err = connection.initConnection(info); err != nil {
-		connection.socket.Close()
-	}
-	return
+	return connection, connection.initConnection(info)
 }
 
-func (c *Connection) handleStatelessMessage(msg *IncomingMessage) {
-	var err error 
-	
+func (c *Connection) handleStatelessMessage(msg *IncomingMessage) error {
 	switch msg.MessageType {
 	case 'S':
-		err = c.handleParameterMessage(msg)
+		return c.handleParameterMessage(msg)
 	case 'K':
-		err = c.handleBackendKeyDataMessage(msg)
+		return c.handleBackendKeyDataMessage(msg)
 	default:
-		err = fmt.Errorf("Unexpected message %c", msg.MessageType)
-	}
-
-	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("Unexpected message %c", msg.MessageType))
 	}
 }
 
@@ -96,27 +85,24 @@ func (c *Connection) handleParameterMessage(msg *IncomingMessage) (err error) {
 		key   string
 		value string
 	)
-	
+
 	if key, err = msg.ReadString(); err != nil {
-		return 
+		return
 	}
-	
+
 	if value, err = msg.ReadString(); err != nil {
 		return
 	}
-	
+
 	c.parameters[key] = value
 	return
 }
 
-func (c *Connection) handleBackendKeyDataMessage(msg *IncomingMessage) (err error) {
-	if err = msg.Read(&c.backendPid); err != nil {
-		return
+func (c *Connection) handleBackendKeyDataMessage(msg *IncomingMessage) error {
+	if readErr := msg.Read(&c.backendPid); readErr != nil {
+		return readErr
 	}
-	if err = msg.Read(&c.backendKey); err != nil {
-		return
-	}
-	return
+	return msg.Read(&c.backendKey)
 }
 
 func (c *Connection) initConnection(info *ConnectionInfo) error {
@@ -143,6 +129,10 @@ func (c *Connection) initConnection(info *ConnectionInfo) error {
 				return AuthenticationMethodNotSupported
 			}
 
+		case 'E':
+			// TODO: parse error message
+			return AuthenticationFailed
+
 		default:
 			c.handleStatelessMessage(msg)
 		}
@@ -165,22 +155,21 @@ func (c *Connection) Query(sql string) error {
 }
 
 func (c *Connection) Close() error {
-	c.sendMessage(TerminateMessage())
-	c.socket.Close()
-	return nil
+	defer c.resetConnection()
+	return c.sendMessage(TerminateMessage())
 }
 
-func (c *Connection) sendMessage(m OutgoingMessage) error {
-	m.Print()
-	return m.Send(c.socket)
+func (connection *Connection) resetConnection() {
+	connection.socket.Close()
+	connection.parameters = make(map[string]string)
+	connection.backendPid = 0
+	connection.backendKey = 0
+}
+
+func (c *Connection) sendMessage(msg OutgoingMessage) error {
+	return msg.Send(c.socket)
 }
 
 func (c *Connection) receiveMessage() (*IncomingMessage, error) {
-	msg, err := ReadMessage(c.socket)
-	if err != nil {
-		return nil, err
-	}
-
-	msg.Print()
-	return msg, nil
+	return ReadMessage(c.socket)
 }

@@ -1,12 +1,15 @@
 package vertigo
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
-	"fmt"
+	"errors"
 	"io"
-	"bufio"
+	"log"
 )
+
+var TrafficLogger *log.Logger
 
 const (
 	protocolVersion = uint32(3 << 16)
@@ -32,11 +35,13 @@ type OutgoingMessage struct {
 
 type IncomingMessage struct {
 	MessageType byte
-	content    []byte
-	reader     *bufio.Reader
+	content     []byte
+	reader      *bufio.Reader
 }
 
 func (m *OutgoingMessage) Send(w io.Writer) error {
+	m.Log()
+
 	if m.MessageType != 0 {
 		binary.Write(w, binary.BigEndian, m.MessageType)
 	}
@@ -58,8 +63,10 @@ func (m *OutgoingMessage) WriteNull() {
 	m.Write(byte(0))
 }
 
-func (m *OutgoingMessage) Print() {
-	fmt.Printf("%s %q\n", string(m.MessageType), m.content.Bytes())
+func (m *OutgoingMessage) Log() {
+	if TrafficLogger != nil {
+		TrafficLogger.Printf("=> %s %q\n", string(m.MessageType), m.content.Bytes())
+	}
 }
 
 func buildMessage(messageType byte) OutgoingMessage {
@@ -109,7 +116,6 @@ func QueryMessage(sql string) OutgoingMessage {
 	return queryMessage
 }
 
-
 func ReadMessage(r io.Reader) (*IncomingMessage, error) {
 	var (
 		messageType byte
@@ -125,17 +131,21 @@ func ReadMessage(r io.Reader) (*IncomingMessage, error) {
 	}
 
 	var messageContent []byte
-	if messageSize > 4 {
+	if messageSize >= 4 {
 		messageContent = make([]byte, messageSize-4)
-		if _, err := io.ReadFull(r, messageContent); err != nil {
-			return nil, err
+		if messageSize > 4 {
+			if _, err := io.ReadFull(r, messageContent); err != nil {
+				return nil, err
+			}
 		}
 	} else {
-		messageContent = make([]byte, 0)
+		return nil, errors.New("A message should be at least 4 bytes long")
 	}
 
 	msg := &IncomingMessage{MessageType: messageType, content: messageContent}
 	msg.reader = bufio.NewReader(bytes.NewBuffer(msg.content))
+
+	msg.Log()
 	return msg, nil
 }
 
@@ -147,6 +157,8 @@ func (m *IncomingMessage) ReadString() (string, error) {
 	return m.reader.ReadString(0)
 }
 
-func (m *IncomingMessage) Print() {
-	fmt.Printf("%s %q\n", string(m.MessageType), m.content)
+func (m *IncomingMessage) Log() {
+	if TrafficLogger != nil {
+		TrafficLogger.Printf("<= %s %q\n", string(m.MessageType), m.content)
+	}
 }
