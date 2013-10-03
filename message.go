@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"bufio"
 )
 
 const (
@@ -12,12 +13,30 @@ const (
 	sslMagicNumber  = uint32(80877103)
 )
 
-type Message struct {
+const (
+	AuthenticationOK                = 0
+	AuthenticationKerberosV5        = 2
+	AuthenticationCleartextPassword = 3
+	AuthenticationCryptPassword     = 4
+	AuthenticationMD5Password       = 5
+	AuthenticationSCAMCredential    = 6
+	AuthenticationGSS               = 7
+	AuthenticationGSSContinue       = 8
+	AuthenticationSSPI              = 9
+)
+
+type OutgoingMessage struct {
 	MessageType byte
 	content     *bytes.Buffer
 }
 
-func (m *Message) Send(w io.Writer) error {
+type IncomingMessage struct {
+	MessageType byte
+	content    []byte
+	reader     *bufio.Reader
+}
+
+func (m *OutgoingMessage) Send(w io.Writer) error {
 	if m.MessageType != 0 {
 		binary.Write(w, binary.BigEndian, m.MessageType)
 	}
@@ -26,28 +45,72 @@ func (m *Message) Send(w io.Writer) error {
 	return writeErr
 }
 
-func (m *Message) Write(data interface{}) error {
+func (m *OutgoingMessage) Write(data interface{}) error {
 	return binary.Write(m.content, binary.BigEndian, data)
 }
 
-func (m *Message) WriteString(s string) {
+func (m *OutgoingMessage) WriteString(s string) {
 	m.content.Write([]byte(s))
 	m.WriteNull()
 }
 
-func (m *Message) WriteNull() {
+func (m *OutgoingMessage) WriteNull() {
 	m.Write(byte(0))
 }
 
-func (m *Message) Print() {
+func (m *OutgoingMessage) Print() {
 	fmt.Printf("%s %q\n", string(m.MessageType), m.content.Bytes())
 }
 
-func buildMessage(messageType byte) Message {
-	return Message{messageType, new(bytes.Buffer)}
+func buildMessage(messageType byte) OutgoingMessage {
+	return OutgoingMessage{messageType, new(bytes.Buffer)}
 }
 
-func ReadMessage(r io.Reader) (*Message, error) {
+func SSLRequestMessage() OutgoingMessage {
+	sslRequestMessage := buildMessage(0)
+	sslRequestMessage.Write(sslMagicNumber)
+	return sslRequestMessage
+}
+
+func StartupMessage(username string, database string) OutgoingMessage {
+	startupMessage := buildMessage(0)
+	startupMessage.Write(protocolVersion)
+	if username != "" {
+		startupMessage.WriteString("user")
+		startupMessage.WriteString(username)
+	}
+	if database != "" {
+		startupMessage.WriteString("database")
+		startupMessage.WriteString(database)
+	}
+
+	startupMessage.WriteNull()
+	return startupMessage
+}
+
+func PasswordMessage(password string, authenticationMethod uint32) OutgoingMessage {
+	passwordMessage := buildMessage('p')
+	switch authenticationMethod {
+	case AuthenticationCleartextPassword:
+		passwordMessage.WriteString(password)
+	default:
+		panic("Cannot create password message for unspported authentication method.")
+	}
+	return passwordMessage
+}
+
+func TerminateMessage() OutgoingMessage {
+	return buildMessage('X')
+}
+
+func QueryMessage(sql string) OutgoingMessage {
+	queryMessage := buildMessage('Q')
+	queryMessage.WriteString(sql)
+	return queryMessage
+}
+
+
+func ReadMessage(r io.Reader) (*IncomingMessage, error) {
 	var (
 		messageType byte
 		messageSize uint32
@@ -71,37 +134,19 @@ func ReadMessage(r io.Reader) (*Message, error) {
 		messageContent = make([]byte, 0)
 	}
 
-	return &Message{messageType, bytes.NewBuffer(messageContent)}, nil
+	msg := &IncomingMessage{MessageType: messageType, content: messageContent}
+	msg.reader = bufio.NewReader(bytes.NewBuffer(msg.content))
+	return msg, nil
 }
 
-func SSLRequestMessage() Message {
-	sslRequestMessage := buildMessage(0)
-	sslRequestMessage.Write(sslMagicNumber)
-	return sslRequestMessage
+func (m *IncomingMessage) Read(data interface{}) error {
+	return binary.Read(m.reader, binary.BigEndian, data)
 }
 
-func StartupMessage(username string, database string) Message {
-	startupMessage := buildMessage(0)
-	startupMessage.Write(protocolVersion)
-	if username != "" {
-		startupMessage.WriteString("user")
-		startupMessage.WriteString(username)
-	}
-	if database != "" {
-		startupMessage.WriteString("database")
-		startupMessage.WriteString(database)
-	}
-
-	startupMessage.WriteNull()
-	return startupMessage
+func (m *IncomingMessage) ReadString() (string, error) {
+	return m.reader.ReadString(0)
 }
 
-func TerminateMessage() Message {
-	return buildMessage('X')
-}
-
-func QueryMessage(sql string) Message {
-	queryMessage := buildMessage('Q')
-	queryMessage.WriteString(sql)
-	return queryMessage
+func (m *IncomingMessage) Print() {
+	fmt.Printf("%s %q\n", string(m.MessageType), m.content)
 }

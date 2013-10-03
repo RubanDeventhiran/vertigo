@@ -5,10 +5,13 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
+	"fmt"
 )
 
 var (
-	SslNotSupported = errors.New("SSL not available on this server")
+	SslNotSupported                  = errors.New("SSL not available on this server")
+	AuthenticationMethodNotSupported = errors.New("Authentication method not supported")
 )
 
 type ConnectionInfo struct {
@@ -20,13 +23,26 @@ type ConnectionInfo struct {
 }
 
 type Connection struct {
-	socket net.Conn
+	socket     net.Conn
+	mutex      sync.Mutex
+	parameters map[string]string
+	backendPid uint32
+	backendKey uint32
 }
 
 func Connect(info *ConnectionInfo) (connection *Connection, err error) {
+	connection = &Connection{}
+	connection.mutex.Lock()
+	defer func() {
+		if err != nil {
+			connection.socket.Close()
+		}
+		connection.mutex.Unlock()
+	}()
+
 	socket, err := net.Dial("tcp", info.Address)
 	if err != nil {
-		return nil, err
+		return
 	}
 
 	if info.SslConfig != nil {
@@ -41,19 +57,64 @@ func Connect(info *ConnectionInfo) (connection *Connection, err error) {
 				sslSocket.Close()
 				return nil, tlsError
 			}
-
-			connection = &Connection{sslSocket}
+			connection.socket = sslSocket
 		} else {
 			socket.Close()
 			return nil, SslNotSupported
 		}
 	} else {
-		connection = &Connection{socket}
+		connection.socket = socket
 	}
 
-	if err := connection.initConnection(info); err != nil {
-		socket.Close()
-		return nil, err
+	connection.parameters = make(map[string]string)
+
+	if err = connection.initConnection(info); err != nil {
+		connection.socket.Close()
+	}
+	return
+}
+
+func (c *Connection) handleStatelessMessage(msg *IncomingMessage) {
+	var err error 
+	
+	switch msg.MessageType {
+	case 'S':
+		err = c.handleParameterMessage(msg)
+	case 'K':
+		err = c.handleBackendKeyDataMessage(msg)
+	default:
+		err = fmt.Errorf("Unexpected message %c", msg.MessageType)
+	}
+
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (c *Connection) handleParameterMessage(msg *IncomingMessage) (err error) {
+	var (
+		key   string
+		value string
+	)
+	
+	if key, err = msg.ReadString(); err != nil {
+		return 
+	}
+	
+	if value, err = msg.ReadString(); err != nil {
+		return
+	}
+	
+	c.parameters[key] = value
+	return
+}
+
+func (c *Connection) handleBackendKeyDataMessage(msg *IncomingMessage) (err error) {
+	if err = msg.Read(&c.backendPid); err != nil {
+		return
+	}
+	if err = msg.Read(&c.backendKey); err != nil {
+		return
 	}
 	return
 }
@@ -64,6 +125,26 @@ func (c *Connection) initConnection(info *ConnectionInfo) error {
 	for msg, err := c.receiveMessage(); msg.MessageType != 'Z'; msg, err = c.receiveMessage() {
 		if err != nil {
 			return err
+		}
+
+		switch msg.MessageType {
+		case 'R':
+			var authCode uint32
+			if readError := msg.Read(&authCode); readError != nil {
+				return readError
+			}
+
+			switch authCode {
+			case AuthenticationOK:
+				continue
+			case AuthenticationCleartextPassword:
+				c.sendMessage(PasswordMessage(info.Password, authCode))
+			default:
+				return AuthenticationMethodNotSupported
+			}
+
+		default:
+			c.handleStatelessMessage(msg)
 		}
 	}
 	return nil
@@ -89,12 +170,12 @@ func (c *Connection) Close() error {
 	return nil
 }
 
-func (c *Connection) sendMessage(m Message) error {
+func (c *Connection) sendMessage(m OutgoingMessage) error {
 	m.Print()
 	return m.Send(c.socket)
 }
 
-func (c *Connection) receiveMessage() (*Message, error) {
+func (c *Connection) receiveMessage() (*IncomingMessage, error) {
 	msg, err := ReadMessage(c.socket)
 	if err != nil {
 		return nil, err
