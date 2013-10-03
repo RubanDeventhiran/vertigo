@@ -7,8 +7,10 @@ import (
 	"io"
 )
 
-const ProtocolVersion = uint32(3 << 16)
-const SslMagicNumber  = uint32(80877103)
+const (
+	protocolVersion = uint32(3 << 16)
+	sslMagicNumber  = uint32(80877103)
+)
 
 type Message struct {
 	MessageType byte
@@ -41,7 +43,7 @@ func (m *Message) Print() {
 	fmt.Printf("%s %q\n", string(m.MessageType), m.content.Bytes())
 }
 
-func BuildMessage(messageType byte) Message {
+func buildMessage(messageType byte) Message {
 	return Message{messageType, new(bytes.Buffer)}
 }
 
@@ -70,4 +72,36 @@ func ReadMessage(r io.Reader) (*Message, error) {
 	}
 
 	return &Message{messageType, bytes.NewBuffer(messageContent)}, nil
+}
+
+func SSLRequestMessage() Message {
+	sslRequestMessage := buildMessage(0)
+	sslRequestMessage.Write(sslMagicNumber)
+	return sslRequestMessage
+}
+
+func StartupMessage(username string, database string) Message {
+	startupMessage := buildMessage(0)
+	startupMessage.Write(protocolVersion)
+	if username != "" {
+		startupMessage.WriteString("user")
+		startupMessage.WriteString(username)
+	}
+	if database != "" {
+		startupMessage.WriteString("database")
+		startupMessage.WriteString(database)
+	}
+
+	startupMessage.WriteNull()
+	return startupMessage
+}
+
+func TerminateMessage() Message {
+	return buildMessage('X')
+}
+
+func QueryMessage(sql string) Message {
+	queryMessage := buildMessage('Q')
+	queryMessage.WriteString(sql)
+	return queryMessage
 }

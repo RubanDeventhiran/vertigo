@@ -2,9 +2,9 @@ package vertigo
 
 import (
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
-	"errors"
 )
 
 var (
@@ -14,6 +14,7 @@ var (
 type ConnectionInfo struct {
 	Address   string
 	Username  string
+	Database  string
 	Password  string
 	SslConfig *tls.Config
 }
@@ -29,8 +30,7 @@ func Connect(info *ConnectionInfo) (connection *Connection, err error) {
 	}
 
 	if info.SslConfig != nil {
-		sslRequest := BuildMessage(0)
-		sslRequest.Write(SslMagicNumber)
+		sslRequest := SSLRequestMessage()
 		sslRequest.Send(socket)
 
 		sslResponse := make([]byte, 1)
@@ -59,13 +59,8 @@ func Connect(info *ConnectionInfo) (connection *Connection, err error) {
 }
 
 func (c *Connection) initConnection(info *ConnectionInfo) error {
-	startupMessage := BuildMessage(0)
-	startupMessage.Write(ProtocolVersion)
-	startupMessage.WriteString("user")
-	startupMessage.WriteString(info.Username)
-	startupMessage.WriteNull()
-	c.sendMessage(startupMessage)
 
+	c.sendMessage(StartupMessage(info.Username, info.Database))
 	for msg, err := c.receiveMessage(); msg.MessageType != 'Z'; msg, err = c.receiveMessage() {
 		if err != nil {
 			return err
@@ -75,10 +70,8 @@ func (c *Connection) initConnection(info *ConnectionInfo) error {
 }
 
 func (c *Connection) Query(sql string) error {
-	queryMessage := BuildMessage('Q')
-	queryMessage.WriteString(sql)
 
-	if err := c.sendMessage(queryMessage); err != nil {
+	if err := c.sendMessage(QueryMessage(sql)); err != nil {
 		return err
 	}
 
@@ -91,8 +84,7 @@ func (c *Connection) Query(sql string) error {
 }
 
 func (c *Connection) Close() error {
-	terminateMessage := BuildMessage('X')
-	c.sendMessage(terminateMessage)
+	c.sendMessage(TerminateMessage())
 	c.socket.Close()
 	return nil
 }

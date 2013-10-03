@@ -1,8 +1,8 @@
 package vertigo
 
 import (
-	"testing"
 	"crypto/tls"
+	"testing"
 )
 
 func defaultConnectionInfo() *ConnectionInfo {
