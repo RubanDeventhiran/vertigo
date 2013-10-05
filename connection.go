@@ -13,6 +13,7 @@ var (
 	SslNotSupported                  = errors.New("SSL not available on this server")
 	AuthenticationMethodNotSupported = errors.New("Authentication method not supported")
 	AuthenticationFailed             = errors.New("Authentication failed")
+	EmptyQuery                       = errors.New("The provided SQL string was empty")
 )
 
 type ConnectionInfo struct {
@@ -140,18 +141,28 @@ func (c *Connection) initConnection(info *ConnectionInfo) error {
 	return nil
 }
 
-func (c *Connection) Query(sql string) error {
+func (c *Connection) Query(sql string) ([][]interface{}, error) {
+	c.l.Lock()
+	defer c.l.Unlock()
 
 	if err := c.sendMessage(QueryMessage(sql)); err != nil {
-		return err
+		return nil, err
 	}
 
+	var queryError error
 	for msg, err := c.receiveMessage(); msg.MessageType != 'Z'; msg, err = c.receiveMessage() {
 		if err != nil {
-			return err
+			return nil, err
+		}
+
+		switch msg.MessageType {
+		case 'I':
+			queryError = EmptyQuery
+		default:
+			c.handleStatelessMessage(msg)
 		}
 	}
-	return nil
+	return nil, queryError
 }
 
 func (c *Connection) Close() error {

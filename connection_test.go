@@ -2,8 +2,6 @@ package vertigo
 
 import (
 	"crypto/tls"
-	"log"
-	"os"
 	"testing"
 )
 
@@ -12,8 +10,6 @@ func defaultConnectionInfo() *ConnectionInfo {
 }
 
 func TestConnectingWithWrongUser(t *testing.T) {
-	TrafficLogger = log.New(os.Stdout, "", log.LstdFlags)
-
 	info := defaultConnectionInfo()
 	info.Username = "definitely_wrong"
 
