@@ -148,6 +148,9 @@ func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) 
 			case RowDescriptionMessage:
 				resultset = &Resultset{Fields: msg.Fields}
 
+			case DataRowMessage:
+				resultset.Rows = append(resultset.Rows, Row{Values: msg.Values})
+
 			case CommandCompleteMessage:
 				resultset.Result = msg.Result
 

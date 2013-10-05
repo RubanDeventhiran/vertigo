@@ -72,7 +72,7 @@ func TestQueryWithResults(t *testing.T) {
 	sql := `
 		SELECT TRUE, 1, 1.1, '1.1'::numeric, 'test', NOW()::DATE, NOW()
 		UNION ALL
-		SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL
+		SELECT NULL::boolean, NULL::int, NULL::float, NULL::numeric, NULL::varchar, NULL::date, NULL::datetime
 	`
 	if resultset, err = connection.Query(sql); err != nil {
 		t.Fatal(err)
@@ -80,5 +80,26 @@ func TestQueryWithResults(t *testing.T) {
 
 	if len(resultset.Fields) != 7 {
 		t.Fatalf("Was expecting seven fields, but found %d", len(resultset.Fields))
+	}
+
+	if len(resultset.Rows) != 2 {
+		t.Fatalf("Was expecting two rows, but found %d", len(resultset.Rows))
+	}
+
+	// TODO: test value of the first row.
+
+	for i, value := range resultset.Rows[1].Values {
+		if value != nil {
+			t.Fatalf("Expected NULL for column %d but found %#+v", i, resultset.Rows[1].Values[0])
+		}
+	}
+}
+
+func TestQueryWithSyntaxError(t *testing.T) {
+	connection := getConnection(t)
+	defer connection.Close()
+
+	if _, err := connection.Query("SELECT /ERROR"); err == nil {
+		t.Fatal("Expected an error response")
 	}
 }

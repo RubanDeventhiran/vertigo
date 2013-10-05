@@ -167,6 +167,41 @@ func parseRowDescriptionMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	return msg, nil
 }
 
+
+type DataRowMessage struct {
+	Values []interface{}
+}
+
+func parseDataRowMessage(reader *bufio.Reader) (IncomingMessage, error) {
+	msg := DataRowMessage{}
+	var numValues uint16
+	if err := decodeNumeric(reader, &numValues); err != nil {
+		return msg, err
+	}
+
+	msg.Values = make([]interface{}, numValues)
+	for i := range msg.Values {
+		var size uint32
+		if err := decodeNumeric(reader, &size); err != nil {
+			return msg, err
+		}
+
+		if size == 0xffffffff {
+			msg.Values[i] = nil
+		} else {
+			value := make([]byte, size)
+			if _, err := io.ReadFull(reader, value); err != nil {
+				return msg, err
+			}
+			msg.Values[i] = string(value)
+		}
+	}
+
+	return msg, nil
+}
+
+
+
 type messageFactoryMethod func(reader *bufio.Reader) (IncomingMessage, error)
 
 var messageFactoryMethods = map[byte]messageFactoryMethod{
@@ -178,6 +213,7 @@ var messageFactoryMethods = map[byte]messageFactoryMethod{
 	'K': parseBackendKeyDataMessage,
 	'T': parseRowDescriptionMessage,
 	'C': parseCommandCompleteMessage,
+	'D': parseDataRowMessage,
 }
 
 func ReadMessage(r io.Reader) (message IncomingMessage, err error) {
