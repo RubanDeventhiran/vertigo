@@ -1,64 +1,143 @@
 package vertigo
 
 import (
-  "bufio"
-  "io"
-  "encoding/binary"
-  "errors"
-  "bytes"
+	"bufio"
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
 )
 
-type IncomingMessage struct {
-  MessageType byte
-  content     []byte
-  reader      *bufio.Reader
+type IncomingMessage interface{}
+
+type AuthenticationRequestMessage struct {
+	AuthCode uint32
+	Salt     []byte
 }
 
-func ReadMessage(r io.Reader) (*IncomingMessage, error) {
-  var (
-    messageType byte
-    messageSize uint32
-  )
-
-  if err := binary.Read(r, binary.BigEndian, &messageType); err != nil {
-    return nil, err
-  }
-
-  if err := binary.Read(r, binary.BigEndian, &messageSize); err != nil {
-    return nil, err
-  }
-
-  var messageContent []byte
-  if messageSize >= 4 {
-    messageContent = make([]byte, messageSize-4)
-    if messageSize > 4 {
-      if _, err := io.ReadFull(r, messageContent); err != nil {
-        return nil, err
-      }
-    }
-  } else {
-    return nil, errors.New("A message should be at least 4 bytes long")
-  }
-
-  msg := &IncomingMessage{MessageType: messageType, content: messageContent}
-  msg.reader = bufio.NewReader(bytes.NewBuffer(msg.content))
-
-  msg.Log()
-  return msg, nil
+type ReadyForQueryMessage struct {
+	TransactionStatus byte
 }
 
+type ErrorResponseMessage struct{}
+type EmptyQueryMessage struct{}
 
-
-func (m *IncomingMessage) Read(data interface{}) error {
-  return binary.Read(m.reader, binary.BigEndian, data)
+type ParameterStatusMessage struct {
+	Name  string
+	Value string
 }
 
-func (m *IncomingMessage) ReadString() (string, error) {
-  return m.reader.ReadString(0)
+type BackendKeyDataMessage struct {
+	Pid uint32
+	Key uint32
 }
 
-func (m *IncomingMessage) Log() {
-  if TrafficLogger != nil {
-    TrafficLogger.Printf("<= %s %q\n", string(m.MessageType), m.content)
-  }
+func parseErrorResponseMessage(reader *bufio.Reader) (IncomingMessage, error) {
+	msg := ErrorResponseMessage{}
+	return msg, nil
+}
+
+func parseEmptyQueryMessage(reader *bufio.Reader) (IncomingMessage, error) {
+	return EmptyQueryMessage{}, nil
+}
+
+func parseAuthenticationRequestMessage(reader *bufio.Reader) (IncomingMessage, error) {
+	msg := AuthenticationRequestMessage{}
+	err := readNumeric(reader, &msg.AuthCode)
+	return msg, err
+}
+
+func parseReadyForQueryMessage(reader *bufio.Reader) (IncomingMessage, error) {
+	msg := ReadyForQueryMessage{}
+	err := readNumeric(reader, &msg.TransactionStatus)
+	return msg, err
+}
+
+func parseParameterStatusMessage(reader *bufio.Reader) (IncomingMessage, error) {
+	msg := ParameterStatusMessage{}
+	if str, err := readString(reader); err != nil {
+		return msg, err
+	} else {
+		msg.Name = str
+	}
+	if str, err := readString(reader); err != nil {
+		return msg, err
+	} else {
+		msg.Value = str
+	}
+	return msg, nil
+}
+
+func parseBackendKeyDataMessage(reader *bufio.Reader) (IncomingMessage, error) {
+	msg := BackendKeyDataMessage{}
+	if err := readNumeric(reader, &msg.Pid); err != nil {
+		return msg, err
+	}
+	if err := readNumeric(reader, &msg.Key); err != nil {
+		return msg, err
+	}
+	return msg, nil
+}
+
+func (msg ErrorResponseMessage) Error() string {
+	return "The server responded with an error"
+}
+
+type messageFactoryMethod func(reader *bufio.Reader) (IncomingMessage, error)
+
+var messageFactoryMethods = map[byte]messageFactoryMethod{
+	'R': parseAuthenticationRequestMessage,
+	'Z': parseReadyForQueryMessage,
+	'E': parseErrorResponseMessage,
+	'I': parseEmptyQueryMessage,
+	'S': parseParameterStatusMessage,
+	'K': parseBackendKeyDataMessage,
+}
+
+func ReadMessage(r io.Reader) (message IncomingMessage, err error) {
+	var (
+		messageType byte
+		messageSize uint32
+	)
+
+	if err = binary.Read(r, binary.BigEndian, &messageType); err != nil {
+		return
+	}
+
+	if err = binary.Read(r, binary.BigEndian, &messageSize); err != nil {
+		return
+	}
+
+	var messageContent []byte
+	if messageSize >= 4 {
+		messageContent = make([]byte, messageSize-4)
+		if messageSize > 4 {
+			if _, err = io.ReadFull(r, messageContent); err != nil {
+				return
+			}
+		}
+	} else {
+		err = errors.New("A message should be at least 4 bytes long")
+		return
+	}
+
+	reader := bufio.NewReader(bytes.NewBuffer(messageContent))
+	factoryMethod := messageFactoryMethods[messageType]
+	if factoryMethod == nil {
+		panic(fmt.Sprintf("Unknown message type: %c", messageType))
+	}
+	return factoryMethod(reader)
+}
+
+func readNumeric(reader *bufio.Reader, data interface{}) error {
+	return binary.Read(reader, binary.BigEndian, data)
+}
+
+func readString(reader *bufio.Reader) (str string, err error) {
+	if str, err = reader.ReadString(0); err != nil {
+		return str, err
+	}
+	return str[0 : len(str)-1], nil
+
 }

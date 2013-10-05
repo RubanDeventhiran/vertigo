@@ -6,92 +6,96 @@ import (
 	"io"
 )
 
-
-
 const (
 	protocolVersion = uint32(3 << 16)
 	sslMagicNumber  = uint32(80877103)
 )
 
-type OutgoingMessage struct {
-	MessageType byte
-	content     *bytes.Buffer
+type OutgoingMessage interface {
+	Encode(buffer *bytes.Buffer) (byte, error)
 }
 
-func (m *OutgoingMessage) Send(w io.Writer) error {
-	m.Log()
+type SSLRequestMessage struct{}
 
-	if m.MessageType != 0 {
-		binary.Write(w, binary.BigEndian, m.MessageType)
+func (m SSLRequestMessage) Encode(buffer *bytes.Buffer) (byte, error) {
+	return 0, encodeNumeric(buffer, sslMagicNumber)
+}
+
+type StartupMessage struct {
+	User     string
+	Database string
+}
+
+func (m StartupMessage) Encode(buffer *bytes.Buffer) (byte, error) {
+	encodeNumeric(buffer, protocolVersion)
+	if m.User != "" {
+		encodeString(buffer, "user")
+		encodeString(buffer, m.User)
 	}
-	binary.Write(w, binary.BigEndian, uint32(m.content.Len()+4))
-	_, writeErr := w.Write(m.content.Bytes())
-	return writeErr
-}
-
-func (m *OutgoingMessage) Log() {
-	if TrafficLogger != nil {
-		TrafficLogger.Printf("=> %s %q\n", string(m.MessageType), m.content.Bytes())
-	}
-}
-
-func buildMessage(messageType byte) OutgoingMessage {
-	return OutgoingMessage{messageType, new(bytes.Buffer)}
-}
-
-func SSLRequestMessage() OutgoingMessage {
-	sslRequestMessage := buildMessage(0)
-	sslRequestMessage.write(sslMagicNumber)
-	return sslRequestMessage
-}
-
-func StartupMessage(username string, database string) OutgoingMessage {
-	startupMessage := buildMessage(0)
-	startupMessage.write(protocolVersion)
-	if username != "" {
-		startupMessage.writeString("user")
-		startupMessage.writeString(username)
-	}
-	if database != "" {
-		startupMessage.writeString("database")
-		startupMessage.writeString(database)
+	if m.Database != "" {
+		encodeString(buffer, "database")
+		encodeString(buffer, m.Database)
 	}
 
-	startupMessage.writeNull()
-	return startupMessage
+	return 0, encodeNull(buffer)
 }
 
-func PasswordMessage(password string, authenticationMethod uint32) OutgoingMessage {
-	passwordMessage := buildMessage('p')
-	switch authenticationMethod {
+type PasswordMessage struct {
+	AuthenticationMethod uint32
+	Password             string
+}
+
+func (m PasswordMessage) Encode(buffer *bytes.Buffer) (byte, error) {
+	switch m.AuthenticationMethod {
 	case AuthenticationCleartextPassword:
-		passwordMessage.writeString(password)
+		return 'p', encodeString(buffer, m.Password)
 	default:
 		panic("Cannot create password message for unspported authentication method.")
 	}
-	return passwordMessage
 }
 
-func TerminateMessage() OutgoingMessage {
-	return buildMessage('X')
+type TerminateMessage struct{}
+
+func (m TerminateMessage) Encode(buffer *bytes.Buffer) (byte, error) {
+	return 'X', nil
 }
 
-func QueryMessage(sql string) OutgoingMessage {
-	queryMessage := buildMessage('Q')
-	queryMessage.writeString(sql)
-	return queryMessage
+type QueryMessage struct {
+	SQL string
 }
 
-
-func (m *OutgoingMessage) write(data interface{}) error {
-	return binary.Write(m.content, binary.BigEndian, data)
+func (m QueryMessage) Encode(buffer *bytes.Buffer) (byte, error) {
+	err := encodeString(buffer, m.SQL)
+	return 'Q', err
 }
 
-func (m *OutgoingMessage) writeString(s string) {
-	m.content.Write([]byte(s))
-	m.writeNull()
+func SendMessage(w io.Writer, m OutgoingMessage) error {
+	buffer := new(bytes.Buffer)
+	messageType, encodeErr := m.Encode(buffer)
+	if encodeErr != nil {
+		return encodeErr
+	}
+
+	if messageType != 0 {
+		binary.Write(w, binary.BigEndian, messageType)
+	}
+	binary.Write(w, binary.BigEndian, uint32(buffer.Len()+4))
+	_, writeErr := w.Write(buffer.Bytes())
+	return writeErr
+
 }
 
-func (m *OutgoingMessage) writeNull() {
-	m.write(byte(0))
+func encodeNumeric(buffer *bytes.Buffer, data interface{}) error {
+	return binary.Write(buffer, binary.BigEndian, data)
+}
+
+func encodeString(buffer *bytes.Buffer, s string) error {
+	if _, err := buffer.Write([]byte(s)); err != nil {
+		return err
+	}
+	return encodeNull(buffer)
+}
+
+func encodeNull(buffer *bytes.Buffer) error {
+	return encodeNumeric(buffer, byte(0))
 }

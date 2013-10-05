@@ -6,12 +6,12 @@ import (
 )
 
 func defaultConnectionInfo() *ConnectionInfo {
-	return &ConnectionInfo{Address: "127.0.0.1:5437", Username: "dbadmin"}
+	return &ConnectionInfo{Address: "127.0.0.1:5437", User: "dbadmin"}
 }
 
 func TestConnectingWithWrongUser(t *testing.T) {
 	info := defaultConnectionInfo()
-	info.Username = "definitely_wrong"
+	info.User = "definitely_wrong"
 
 	_, err := Connect(info)
 	if err == nil {
