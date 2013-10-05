@@ -40,8 +40,6 @@ func TestQueryWithoutResults(t *testing.T) {
 	)
 
 	if resultset, err = connection.Query("SELECT 'foo' AS test LIMIT 0"); err != nil {
-		TrafficLogger.Println("error")
-		TrafficLogger.Println(err)
 		t.Fatal(err)
 	}
 
