@@ -123,34 +123,41 @@ func (c *Connection) initConnection(info *ConnectionInfo) error {
 	return nil
 }
 
-func (c *Connection) Query(sql string) ([][]interface{}, error) {
+func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) {
 	c.l.Lock()
 	defer c.l.Unlock()
 
-	if err := c.sendMessage(QueryMessage{SQL: sql}); err != nil {
-		return nil, err
+	if queryError = c.sendMessage(QueryMessage{SQL: sql}); queryError != nil {
+		return
 	}
 
-	var queryError error
 	for {
-		msg, err := c.receiveMessage()
-		if err != nil {
-			return nil, err
-		}
+		if msg, err := c.receiveMessage(); err != nil {
+			queryError = err
+			return
 
-		switch msg := msg.(type) {
-		case EmptyQueryMessage:
-			queryError = EmptyQuery
+		} else {
 
-		default:
-			c.handleStatelessMessage(msg)
-		}
+			switch msg := msg.(type) {
+			case EmptyQueryMessage:
+				queryError = EmptyQuery
 
-		if _, ok := msg.(ReadyForQueryMessage); ok {
-			return nil, queryError
+			case RowDescriptionMessage:
+				resultset = &Resultset{Fields: msg.Fields}
+
+			case CommandCompleteMessage:
+				resultset.Result = msg.Result
+
+			default:
+				c.handleStatelessMessage(msg)
+			}
+
+			if _, ok := msg.(ReadyForQueryMessage); ok {
+				break
+			}
 		}
 	}
-	return nil, queryError
+	return
 }
 
 func (c *Connection) Close() error {

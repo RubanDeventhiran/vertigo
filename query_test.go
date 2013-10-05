@@ -1,8 +1,8 @@
 package vertigo
 
 import (
-	// "log"
-	// "os"
+	"log"
+	"os"
 	"testing"
 )
 
@@ -18,32 +18,47 @@ func TestNonQuery(t *testing.T) {
 	connection := getConnection(t)
 	defer connection.Close()
 
-	if _, err := connection.Query(" -- empty "); err != EmptyQuery {
+	if _, err := connection.Query(""); err != EmptyQuery {
 		t.Fatal("Expected empty query to return an empty query error.")
 	}
 
 	if _, err := connection.Query(" -- empty "); err != EmptyQuery {
-		t.Fatal("Expected empty query to return an empty query error.")
+		t.Fatal("Expected comment query to return an empty query error.")
 	}
 }
 
-// func TestQueryWithoutResults(t *testing.T) {
-// 	TrafficLogger = log.New(os.Stdout, "", log.LstdFlags)
-// 	defer func() { TrafficLogger = nil }()
+func TestQueryWithoutResults(t *testing.T) {
+	TrafficLogger = log.New(os.Stdout, "", log.LstdFlags)
+	defer func() { TrafficLogger = nil }()
 
-// 	connection := getConnection(t)
-// 	defer connection.Close()
+	connection := getConnection(t)
+	defer connection.Close()
 
-// 	var (
-// 		resultset [][]interface{}
-// 		err       error
-// 	)
+	var (
+		resultset *Resultset
+		err       error
+	)
 
-// 	if resultset, err = connection.Query("SELECT 'foo' LIMIT 0"); err != nil {
-// 		t.Fatal(err)
-// 	}
+	if resultset, err = connection.Query("SELECT 'foo' AS test LIMIT 0"); err != nil {
+		TrafficLogger.Println("error")
+		TrafficLogger.Println(err)
+		t.Fatal(err)
+	}
 
-// 	if resultset == nil {
-// 		t.Fatal("Expected a resultset object")
-// 	}
-// }
+	if resultset == nil {
+		t.Fatal("Expected a resultset object")
+	}
+
+	if len(resultset.Fields) != 1 {
+		t.Fatalf("Was expecting only one field, but found %d", len(resultset.Fields))	
+	}
+
+	if resultset.Fields[0].Name != "test" {
+		t.Fatalf("Was expecting first field to be called 'test', but was %s", resultset.Fields[0].Name)	
+	}
+
+
+	if len(resultset.Rows) != 0 {
+		t.Fatalf("Was expecting zero rows, but found %d", len(resultset.Fields))	
+	}
+}

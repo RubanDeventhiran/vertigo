@@ -11,57 +11,57 @@ import (
 
 type IncomingMessage interface{}
 
-type AuthenticationRequestMessage struct {
-	AuthCode uint32
-	Salt     []byte
-}
-
-type ReadyForQueryMessage struct {
-	TransactionStatus byte
-}
-
 type ErrorResponseMessage struct{}
-type EmptyQueryMessage struct{}
-
-type ParameterStatusMessage struct {
-	Name  string
-	Value string
-}
-
-type BackendKeyDataMessage struct {
-	Pid uint32
-	Key uint32
-}
 
 func parseErrorResponseMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	msg := ErrorResponseMessage{}
 	return msg, nil
 }
 
+func (msg ErrorResponseMessage) Error() string {
+	return "The server responded with an error"
+}
+
+type EmptyQueryMessage struct{}
+
 func parseEmptyQueryMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	return EmptyQueryMessage{}, nil
 }
 
+type AuthenticationRequestMessage struct {
+	AuthCode uint32
+	Salt     []byte
+}
+
 func parseAuthenticationRequestMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	msg := AuthenticationRequestMessage{}
-	err := readNumeric(reader, &msg.AuthCode)
+	err := decodeNumeric(reader, &msg.AuthCode)
 	return msg, err
+}
+
+type ReadyForQueryMessage struct {
+	TransactionStatus byte
 }
 
 func parseReadyForQueryMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	msg := ReadyForQueryMessage{}
-	err := readNumeric(reader, &msg.TransactionStatus)
+	err := decodeNumeric(reader, &msg.TransactionStatus)
 	return msg, err
+}
+
+type ParameterStatusMessage struct {
+	Name  string
+	Value string
 }
 
 func parseParameterStatusMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	msg := ParameterStatusMessage{}
-	if str, err := readString(reader); err != nil {
+	if str, err := decodeString(reader); err != nil {
 		return msg, err
 	} else {
 		msg.Name = str
 	}
-	if str, err := readString(reader); err != nil {
+	if str, err := decodeString(reader); err != nil {
 		return msg, err
 	} else {
 		msg.Value = str
@@ -69,19 +69,83 @@ func parseParameterStatusMessage(reader *bufio.Reader) (IncomingMessage, error) 
 	return msg, nil
 }
 
+type BackendKeyDataMessage struct {
+	Pid uint32
+	Key uint32
+}
+
 func parseBackendKeyDataMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	msg := BackendKeyDataMessage{}
-	if err := readNumeric(reader, &msg.Pid); err != nil {
+	if err := decodeNumeric(reader, &msg.Pid); err != nil {
 		return msg, err
 	}
-	if err := readNumeric(reader, &msg.Key); err != nil {
+	if err := decodeNumeric(reader, &msg.Key); err != nil {
 		return msg, err
 	}
 	return msg, nil
 }
 
-func (msg ErrorResponseMessage) Error() string {
-	return "The server responded with an error"
+type CommandCompleteMessage struct {
+	Result string
+}
+
+func parseCommandCompleteMessage(reader *bufio.Reader) (IncomingMessage, error) {
+	msg := CommandCompleteMessage{}
+	if str, err := decodeString(reader); err != nil {
+		return msg, err
+	} else {
+		msg.Result = str
+	}
+
+	return msg, nil
+}
+
+type RowDescriptionMessage struct {
+	Fields []Field
+}
+
+func parseRowDescriptionMessage(reader *bufio.Reader) (IncomingMessage, error) {
+	msg := RowDescriptionMessage{}
+	var numFields uint16
+	if err := decodeNumeric(reader, &numFields); err != nil {
+		return msg, err
+	}
+
+	msg.Fields = make([]Field, numFields)
+	for i := range msg.Fields {
+		field := &msg.Fields[i]
+
+		if name, err := decodeString(reader); err != nil {
+			return msg, err
+		} else {
+			field.Name = name
+		}
+
+		if err := decodeNumeric(reader, &field.TableOID); err != nil {
+			return msg, err
+		}
+
+		if err := decodeNumeric(reader, &field.AttributeNumber); err != nil {
+			return msg, err
+		}
+
+		if err := decodeNumeric(reader, &field.DataTypeOID); err != nil {
+			return msg, err
+		}
+
+		if err := decodeNumeric(reader, &field.DataTypeSize); err != nil {
+			return msg, err
+		}
+
+		if err := decodeNumeric(reader, &field.TypeModifier); err != nil {
+			return msg, err
+		}
+
+		if err := decodeNumeric(reader, &field.FormatCode); err != nil {
+			return msg, err
+		}
+	}
+	return msg, nil
 }
 
 type messageFactoryMethod func(reader *bufio.Reader) (IncomingMessage, error)
@@ -93,6 +157,8 @@ var messageFactoryMethods = map[byte]messageFactoryMethod{
 	'I': parseEmptyQueryMessage,
 	'S': parseParameterStatusMessage,
 	'K': parseBackendKeyDataMessage,
+	'T': parseRowDescriptionMessage,
+	'C': parseCommandCompleteMessage,
 }
 
 func ReadMessage(r io.Reader) (message IncomingMessage, err error) {
@@ -130,14 +196,13 @@ func ReadMessage(r io.Reader) (message IncomingMessage, err error) {
 	return factoryMethod(reader)
 }
 
-func readNumeric(reader *bufio.Reader, data interface{}) error {
+func decodeNumeric(reader *bufio.Reader, data interface{}) error {
 	return binary.Read(reader, binary.BigEndian, data)
 }
 
-func readString(reader *bufio.Reader) (str string, err error) {
+func decodeString(reader *bufio.Reader) (str string, err error) {
 	if str, err = reader.ReadString(0); err != nil {
 		return str, err
 	}
 	return str[0 : len(str)-1], nil
-
 }
