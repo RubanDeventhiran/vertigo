@@ -50,15 +50,14 @@ func TestQueryWithoutResults(t *testing.T) {
 	}
 
 	if len(resultset.Fields) != 1 {
-		t.Fatalf("Was expecting only one field, but found %d", len(resultset.Fields))	
+		t.Fatalf("Was expecting only one field, but found %d", len(resultset.Fields))
 	}
 
 	if resultset.Fields[0].Name != "test" {
-		t.Fatalf("Was expecting first field to be called 'test', but was %s", resultset.Fields[0].Name)	
+		t.Fatalf("Was expecting first field to be called 'test', but was %s", resultset.Fields[0].Name)
 	}
 
-
 	if len(resultset.Rows) != 0 {
-		t.Fatalf("Was expecting zero rows, but found %d", len(resultset.Fields))	
+		t.Fatalf("Was expecting zero rows, but found %d", len(resultset.Fields))
 	}
 }
