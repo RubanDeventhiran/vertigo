@@ -11,15 +11,34 @@ import (
 
 type IncomingMessage interface{}
 
-type ErrorResponseMessage struct{}
+type ErrorResponseMessage struct{
+	Fields map[byte]string
+}
 
 func parseErrorResponseMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	msg := ErrorResponseMessage{}
+	msg.Fields = make(map[byte]string)
+	for {
+		var fieldType byte
+		if err := decodeNumeric(reader, &fieldType); err != nil {
+			return msg, err
+		}
+
+		if fieldType == 0 {
+			break
+		}
+
+		if str, err := decodeString(reader); err != nil {
+			return msg, err
+		} else {
+			msg.Fields[fieldType] = str
+		}
+	}
 	return msg, nil
 }
 
 func (msg ErrorResponseMessage) Error() string {
-	return "The server responded with an error"
+	return fmt.Sprintf("Vertica %s %s: %s", msg.Fields['S'], msg.Fields['C'], msg.Fields['M'])
 }
 
 type EmptyQueryMessage struct{}

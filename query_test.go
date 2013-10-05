@@ -28,9 +28,6 @@ func TestNonQuery(t *testing.T) {
 }
 
 func TestQueryWithoutResults(t *testing.T) {
-	TrafficLogger = log.New(os.Stdout, "", log.LstdFlags)
-	defer func() { TrafficLogger = nil }()
-
 	connection := getConnection(t)
 	defer connection.Close()
 
@@ -57,5 +54,31 @@ func TestQueryWithoutResults(t *testing.T) {
 
 	if len(resultset.Rows) != 0 {
 		t.Fatalf("Was expecting zero rows, but found %d", len(resultset.Fields))
+	}
+}
+
+func TestQueryWithResults(t *testing.T) {
+	TrafficLogger = log.New(os.Stdout, "", log.LstdFlags)
+	defer func() { TrafficLogger = nil }()
+
+	connection := getConnection(t)
+	defer connection.Close()
+
+	var (
+		resultset *Resultset
+		err       error
+	)
+
+	sql := `
+		SELECT TRUE, 1, 1.1, '1.1'::numeric, 'test', NOW()::DATE, NOW()
+		UNION ALL
+		SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL
+	`
+	if resultset, err = connection.Query(sql); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resultset.Fields) != 7 {
+		t.Fatalf("Was expecting seven fields, but found %d", len(resultset.Fields))
 	}
 }

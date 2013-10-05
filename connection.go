@@ -142,6 +142,9 @@ func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) 
 			case EmptyQueryMessage:
 				queryError = EmptyQuery
 
+			case ErrorResponseMessage:
+				queryError = msg
+
 			case RowDescriptionMessage:
 				resultset = &Resultset{Fields: msg.Fields}
 

@@ -6,7 +6,9 @@ type Resultset struct {
 	Result string
 }
 
-type Row interface{}
+type Row struct {
+	Values []interface{}
+}
 
 type Field struct {
 	Name            string
