@@ -1,23 +1,24 @@
 package vertigo
 
 import (
+	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net"
-	"crypto/tls"
 	"sync"
-	"fmt"
-	"errors"
 )
 
 var (
 	SslNotSupported                  = errors.New("SSL not available on this server")
 	AuthenticationMethodNotSupported = errors.New("Authentication method not supported")
 	AuthenticationFailed             = errors.New("Authentication failed")
+	EmptyQuery                       = errors.New("The provided SQL string was empty")
 )
 
 type ConnectionInfo struct {
 	Address   string
-	Username  string
+	User      string
 	Database  string
 	Password  string
 	SslConfig *tls.Config
@@ -26,10 +27,11 @@ type ConnectionInfo struct {
 type Connection struct {
 	l sync.Mutex
 
-	socket     net.Conn
-	parameters map[string]string
-	backendPid uint32
-	backendKey uint32
+	socket            net.Conn
+	parameters        map[string]string
+	backendPid        uint32
+	backendKey        uint32
+	transactionStatus byte
 }
 
 func Connect(info *ConnectionInfo) (connection Connection, err error) {
@@ -49,7 +51,7 @@ func Connect(info *ConnectionInfo) (connection Connection, err error) {
 	}
 
 	if info.SslConfig != nil {
-		connection.sendMessage(SSLRequestMessage())
+		connection.sendMessage(SSLRequestMessage{})
 
 		sslResponse := make([]byte, 1)
 		io.ReadFull(connection.socket, sslResponse)
@@ -69,94 +71,104 @@ func Connect(info *ConnectionInfo) (connection Connection, err error) {
 	return connection, connection.initConnection(info)
 }
 
-func (c *Connection) handleStatelessMessage(msg *IncomingMessage) error {
-	switch msg.MessageType {
-	case 'S':
-		return c.handleParameterMessage(msg)
-	case 'K':
-		return c.handleBackendKeyDataMessage(msg)
+func (c *Connection) handleStatelessMessage(msg IncomingMessage) {
+	switch msg := msg.(type) {
+	case ParameterStatusMessage:
+		c.parameters[msg.Name] = msg.Value
+
+	case BackendKeyDataMessage:
+		c.backendPid = msg.Pid
+		c.backendKey = msg.Key
+
+	case ReadyForQueryMessage:
+		c.transactionStatus = msg.TransactionStatus
+
 	default:
-		panic(fmt.Sprintf("Unexpected message %c", msg.MessageType))
+		panic(fmt.Sprintf("Unexpected message: %#+v", msg))
 	}
-}
-
-func (c *Connection) handleParameterMessage(msg *IncomingMessage) (err error) {
-	var (
-		key   string
-		value string
-	)
-
-	if key, err = msg.ReadString(); err != nil {
-		return
-	}
-
-	if value, err = msg.ReadString(); err != nil {
-		return
-	}
-
-	c.parameters[key] = value
-	return
-}
-
-func (c *Connection) handleBackendKeyDataMessage(msg *IncomingMessage) error {
-	if readErr := msg.Read(&c.backendPid); readErr != nil {
-		return readErr
-	}
-	return msg.Read(&c.backendKey)
 }
 
 func (c *Connection) initConnection(info *ConnectionInfo) error {
 
-	c.sendMessage(StartupMessage(info.Username, info.Database))
-	for msg, err := c.receiveMessage(); msg.MessageType != 'Z'; msg, err = c.receiveMessage() {
+	c.sendMessage(StartupMessage{User: info.User, Database: info.Database})
+	for {
+		msg, err := c.receiveMessage()
 		if err != nil {
 			return err
 		}
 
-		switch msg.MessageType {
-		case 'R':
-			var authCode uint32
-			if readError := msg.Read(&authCode); readError != nil {
-				return readError
-			}
-
-			switch authCode {
+		switch msg := msg.(type) {
+		case AuthenticationRequestMessage:
+			switch msg.AuthCode {
 			case AuthenticationOK:
 				continue
 			case AuthenticationCleartextPassword:
-				c.sendMessage(PasswordMessage(info.Password, authCode))
+				c.sendMessage(PasswordMessage{Password: info.Password, AuthenticationMethod: msg.AuthCode})
 			default:
 				return AuthenticationMethodNotSupported
 			}
 
-		case 'E':
-			// TODO: parse error message
-			return AuthenticationFailed
+		case ErrorResponseMessage:
+			return msg
 
 		default:
 			c.handleStatelessMessage(msg)
 		}
+
+		if _, ok := msg.(ReadyForQueryMessage); ok {
+			return nil
+		}
+
 	}
 	return nil
 }
 
-func (c *Connection) Query(sql string) error {
+func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) {
+	c.l.Lock()
+	defer c.l.Unlock()
 
-	if err := c.sendMessage(QueryMessage(sql)); err != nil {
-		return err
+	if queryError = c.sendMessage(QueryMessage{SQL: sql}); queryError != nil {
+		return
 	}
 
-	for msg, err := c.receiveMessage(); msg.MessageType != 'Z'; msg, err = c.receiveMessage() {
-		if err != nil {
-			return err
+	for {
+		if msg, err := c.receiveMessage(); err != nil {
+			queryError = err
+			return
+
+		} else {
+
+			switch msg := msg.(type) {
+			case EmptyQueryMessage:
+				queryError = EmptyQuery
+
+			case ErrorResponseMessage:
+				queryError = msg
+
+			case RowDescriptionMessage:
+				resultset = &Resultset{Fields: msg.Fields}
+
+			case DataRowMessage:
+				resultset.Rows = append(resultset.Rows, Row{Values: msg.Values})
+
+			case CommandCompleteMessage:
+				resultset.Result = msg.Result
+
+			default:
+				c.handleStatelessMessage(msg)
+			}
+
+			if _, ok := msg.(ReadyForQueryMessage); ok {
+				break
+			}
 		}
 	}
-	return nil
+	return
 }
 
 func (c *Connection) Close() error {
 	defer c.resetConnection()
-	return c.sendMessage(TerminateMessage())
+	return c.sendMessage(TerminateMessage{})
 }
 
 func (connection *Connection) resetConnection() {
@@ -167,9 +179,17 @@ func (connection *Connection) resetConnection() {
 }
 
 func (c *Connection) sendMessage(msg OutgoingMessage) error {
-	return msg.Send(c.socket)
+	if TrafficLogger != nil {
+		TrafficLogger.Printf("=> %#+v\n", msg)
+	}
+
+	return SendMessage(c.socket, msg)
 }
 
-func (c *Connection) receiveMessage() (*IncomingMessage, error) {
-	return ReadMessage(c.socket)
+func (c *Connection) receiveMessage() (msg IncomingMessage, err error) {
+	msg, err = ReadMessage(c.socket)
+	if err == nil && TrafficLogger != nil {
+		TrafficLogger.Printf("<= %#+v", msg)
+	}
+	return
 }
