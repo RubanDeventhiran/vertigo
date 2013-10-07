@@ -14,15 +14,20 @@ func getConnection(t *testing.T) Connection {
 	return connection
 }
 
+func isEmptyQuery(msg IncomingMessage) bool {
+	_, ok := msg.(EmptyQueryMessage)
+	return ok
+}
+
 func TestNonQuery(t *testing.T) {
 	connection := getConnection(t)
 	defer connection.Close()
 
-	if _, err := connection.Query(""); err != EmptyQuery {
+	if _, err := connection.Query(""); !isEmptyQuery(err) {
 		t.Fatal("Expected empty query to return an empty query error.")
 	}
 
-	if _, err := connection.Query(" -- empty "); err != EmptyQuery {
+	if _, err := connection.Query(" -- empty "); !isEmptyQuery(err) {
 		t.Fatal("Expected comment query to return an empty query error.")
 	}
 }
