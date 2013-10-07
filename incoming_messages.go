@@ -41,11 +41,17 @@ func (msg ErrorResponseMessage) Error() string {
 	return fmt.Sprintf("Vertica %s %s: %s", msg.Fields['S'], msg.Fields['C'], msg.Fields['M'])
 }
 
+
 type EmptyQueryMessage struct{}
 
 func parseEmptyQueryMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	return EmptyQueryMessage{}, nil
 }
+
+func (msg EmptyQueryMessage) Error() string {
+	return "The provided SQL string was empty"
+}
+
 
 type AuthenticationRequestMessage struct {
 	AuthCode uint32

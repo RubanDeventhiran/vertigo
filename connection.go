@@ -12,8 +12,6 @@ import (
 var (
 	SslNotSupported                  = errors.New("SSL not available on this server")
 	AuthenticationMethodNotSupported = errors.New("Authentication method not supported")
-	AuthenticationFailed             = errors.New("Authentication failed")
-	EmptyQuery                       = errors.New("The provided SQL string was empty")
 )
 
 type ConnectionInfo struct {
@@ -140,7 +138,7 @@ func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) 
 
 			switch msg := msg.(type) {
 			case EmptyQueryMessage:
-				queryError = EmptyQuery
+				queryError = msg
 
 			case ErrorResponseMessage:
 				queryError = msg
