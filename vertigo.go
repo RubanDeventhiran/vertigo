@@ -17,3 +17,9 @@ const (
 	AuthenticationGSSContinue       = 8
 	AuthenticationSSPI              = 9
 )
+
+const (
+	TransactionStatusIdle          = 'I'
+	TransactionStatusInTransaction = 'T'
+	TransactionStatusError         = 'E'
+)

@@ -25,6 +25,7 @@ type ConnectionInfo struct {
 type Connection struct {
 	l sync.Mutex
 
+	config            *ConnectionInfo
 	socket            net.Conn
 	parameters        map[string]string
 	backendPid        uint32
@@ -32,8 +33,8 @@ type Connection struct {
 	transactionStatus byte
 }
 
-func Connect(info *ConnectionInfo) (connection Connection, connectionError error) {
-	connection = Connection{}
+func Connect(config *ConnectionInfo) (connection Connection, connectionError error) {
+	connection = Connection{config: config}
 	defer func() {
 		if r := recover(); r != nil {
 			connection.resetConnection()
@@ -44,79 +45,26 @@ func Connect(info *ConnectionInfo) (connection Connection, connectionError error
 	connection.l.Lock()
 	defer connection.l.Unlock()
 
-	if socket, dialError := net.Dial("tcp", info.Address); dialError != nil {
-		panic(dialError)
-	} else {
-		connection.socket = socket
-	}
-
-
-	if info.SslConfig != nil {
-		connection.sendMessage(SSLRequestMessage{})
-
-		sslResponse := make([]byte, 1)
-		io.ReadFull(connection.socket, sslResponse)
-		if sslResponse[0] == byte('S') {
-			tlsSocket := tls.Client(connection.socket, info.SslConfig)
-			connection.socket = tlsSocket
-			if tlsError := tlsSocket.Handshake(); tlsError != nil {
-				panic(tlsError)
-			}
-		} else {
-			panic(SslNotSupported)
-		}
-	}
-
-	connection.parameters = make(map[string]string)
-	connection.initConnection(info)
+	connection.resetConnection()
+	connection.openConnection()
 	return connection, nil
 }
 
-func (c *Connection) handleStatelessMessage(msg IncomingMessage) {
-	switch msg := msg.(type) {
-	case ParameterStatusMessage:
-		c.parameters[msg.Name] = msg.Value
-
-	case BackendKeyDataMessage:
-		c.backendPid = msg.Pid
-		c.backendKey = msg.Key
-
-	default:
-		panic(fmt.Sprintf("Unexpected message: %#+v", msg))
-	}
-}
-
-func (c *Connection) initConnection(info *ConnectionInfo) {
-	c.sendMessage(StartupMessage{User: info.User, Database: info.Database})
-
-	for msg := c.receiveMessage(); !c.isReadyForQuery(msg); msg = c.receiveMessage() {
-		switch msg := msg.(type) {
-		case AuthenticationRequestMessage:
-			switch msg.AuthCode {
-			case AuthenticationOK:
-				continue
-			case AuthenticationCleartextPassword:
-				c.sendMessage(PasswordMessage{Password: info.Password, AuthenticationMethod: msg.AuthCode})
-			default:
-				panic(AuthenticationMethodNotSupported)
-			}
-
-		case ErrorResponseMessage:
-			panic(msg)
-
-		default:
-			c.handleStatelessMessage(msg)
+func (c *Connection) Close() (err error) {
+	defer c.resetConnection()
+	defer func() {
+		if r := recover(); r != nil {
+			err = r.(error)
 		}
-	}
-	return
-}
+	}()
 
-func (c *Connection) isReadyForQuery(msg IncomingMessage) bool {
-	typeMsg, ok := msg.(ReadyForQueryMessage)
-	if ok {
-		c.transactionStatus = typeMsg.TransactionStatus
+	if c.socket != nil {
+		c.sendMessage(TerminateMessage{})
+	} else {
+		panic("Socket is not open")
 	}
-	return ok
+
+	return nil
 }
 
 func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) {
@@ -125,10 +73,14 @@ func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) 
 
 	defer func() {
 		if r := recover(); r != nil {
-			c.Close()
+			c.resetConnection()
 			queryError = r.(error)
 		}
 	}()
+
+	if c.socket == nil {
+		c.openConnection()
+	}
 
 	c.sendMessage(QueryMessage{SQL: sql})
 	for msg := c.receiveMessage(); !c.isReadyForQuery(msg); msg = c.receiveMessage() {
@@ -152,25 +104,89 @@ func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) 
 	return
 }
 
-func (c *Connection) Close() (err error) {
-	defer c.resetConnection()
-	defer func() {
-		if r := recover(); r != nil {
-			err = r.(error)
-		}
-	}()
+func (c *Connection) handleStatelessMessage(msg IncomingMessage) {
+	switch msg := msg.(type) {
+	case ParameterStatusMessage:
+		c.parameters[msg.Name] = msg.Value
 
-	c.sendMessage(TerminateMessage{})
-	return nil
+	case BackendKeyDataMessage:
+		c.backendPid = msg.Pid
+		c.backendKey = msg.Key
+
+	default:
+		panic(fmt.Sprintf("Unexpected message: %#+v", msg))
+	}
 }
 
-func (connection *Connection) resetConnection() {
-	if connection.socket != nil {
-		connection.socket.Close()
+func (c *Connection) openConnection() {
+	if socket, dialError := net.Dial("tcp", c.config.Address); dialError != nil {
+		panic(dialError)
+	} else {
+		c.socket = socket
 	}
-	connection.parameters = make(map[string]string)
-	connection.backendPid = 0
-	connection.backendKey = 0
+
+	if c.config.SslConfig != nil {
+		c.sendMessage(SSLRequestMessage{})
+
+		sslResponse := make([]byte, 1)
+		io.ReadFull(c.socket, sslResponse)
+		if sslResponse[0] == byte('S') {
+			tlsSocket := tls.Client(c.socket, c.config.SslConfig)
+			c.socket = tlsSocket
+			if tlsError := tlsSocket.Handshake(); tlsError != nil {
+				panic(tlsError)
+			}
+		} else {
+			panic(SslNotSupported)
+		}
+	}
+
+	c.initConnection()
+}
+
+func (c *Connection) initConnection() {
+	c.sendMessage(StartupMessage{User: c.config.User, Database: c.config.Database})
+
+	for msg := c.receiveMessage(); !c.isReadyForQuery(msg); msg = c.receiveMessage() {
+		switch msg := msg.(type) {
+		case AuthenticationRequestMessage:
+			switch msg.AuthCode {
+			case AuthenticationOK:
+				continue
+			case AuthenticationCleartextPassword:
+				c.sendMessage(PasswordMessage{Password: c.config.Password, AuthenticationMethod: msg.AuthCode})
+			default:
+				panic(AuthenticationMethodNotSupported)
+			}
+
+		case ErrorResponseMessage:
+			panic(msg)
+
+		default:
+			c.handleStatelessMessage(msg)
+		}
+	}
+	return
+}
+
+func (c *Connection) isReadyForQuery(msg IncomingMessage) bool {
+	typeMsg, ok := msg.(ReadyForQueryMessage)
+	if ok {
+		c.transactionStatus = typeMsg.TransactionStatus
+	}
+	return ok
+}
+
+func (c *Connection) resetConnection() {
+	if c.socket != nil {
+		c.socket.Close()
+		c.socket = nil
+	}
+
+	c.parameters = make(map[string]string)
+	c.backendPid = 0
+	c.backendKey = 0
+	c.transactionStatus = 0
 }
 
 func (c *Connection) sendMessage(msg OutgoingMessage) {

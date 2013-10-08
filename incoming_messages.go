@@ -11,7 +11,7 @@ import (
 
 type IncomingMessage interface{}
 
-type ErrorResponseMessage struct{
+type ErrorResponseMessage struct {
 	Fields map[byte]string
 }
 
@@ -41,6 +41,9 @@ func (msg ErrorResponseMessage) Error() string {
 	return fmt.Sprintf("Vertica %s %s: %s", msg.Fields['S'], msg.Fields['C'], msg.Fields['M'])
 }
 
+func (msg ErrorResponseMessage) Code() string {
+	return msg.Fields['C']
+}
 
 type EmptyQueryMessage struct{}
 
@@ -51,7 +54,6 @@ func parseEmptyQueryMessage(reader *bufio.Reader) (IncomingMessage, error) {
 func (msg EmptyQueryMessage) Error() string {
 	return "The provided SQL string was empty"
 }
-
 
 type AuthenticationRequestMessage struct {
 	AuthCode uint32
@@ -173,7 +175,6 @@ func parseRowDescriptionMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	return msg, nil
 }
 
-
 type DataRowMessage struct {
 	Values []interface{}
 }
@@ -205,8 +206,6 @@ func parseDataRowMessage(reader *bufio.Reader) (IncomingMessage, error) {
 
 	return msg, nil
 }
-
-
 
 type messageFactoryMethod func(reader *bufio.Reader) (IncomingMessage, error)
 
