@@ -14,25 +14,31 @@ var (
 	AuthenticationMethodNotSupported = errors.New("Authentication method not supported")
 )
 
+// Struct to hold all the information necessary to connect to the Vertics server.
 type ConnectionInfo struct {
-	Address   string
-	User      string
-	Database  string
-	Password  string
-	SslConfig *tls.Config
+	Address   string      // The address of the Vertica server. Should include a port number.
+	User      string      // The user to connect with.
+	Password  string      // The password for this user.
+	Database  string      // The database to connect to. This can be left empty.
+	SslConfig *tls.Config // The tls.Config struct to use for SSL connections.
 }
 
+// The main connection object.
 type Connection struct {
-	l sync.Mutex
+	l sync.Mutex // Connection lock to make sure only one command runs at a time
 
-	config            *ConnectionInfo
-	socket            net.Conn
-	parameters        map[string]string
-	backendPid        uint32
-	backendKey        uint32
-	transactionStatus byte
+	config            *ConnectionInfo   // Holds the connection parameters
+	socket            net.Conn          // The network socket of this connection
+	parameters        map[string]string // Server parameters the client gets told about when connecting
+	backendPid        uint32            // The PID of the server's process.
+	backendKey        uint32            // The secret key of the server's backend process.
+	transactionStatus byte              // The current transaction status of the connection
 }
 
+// Opens a connection to the server using the information in the config parameter.
+//
+// The connection will be returned as the first return value. It will only be in a
+// usuable state if the second return value is nil.
 func Connect(config *ConnectionInfo) (connection Connection, connectionError error) {
 	connection = Connection{config: config}
 	defer func() {
@@ -50,6 +56,16 @@ func Connect(config *ConnectionInfo) (connection Connection, connectionError err
 	return connection, nil
 }
 
+// Returns the current transaction status of the connection.
+func (c *Connection) TransactionStatus() byte {
+	return c.transactionStatus
+}
+
+// Closes the connection to the server.
+//
+// It will try to gracefully terminate the connection by sending the server
+// a terminate message. Regardless of whether this succeeds, the socket will be
+// closed and the status of the connection will be reset.
 func (c *Connection) Close() (err error) {
 	defer c.resetConnection()
 	defer func() {
@@ -67,6 +83,16 @@ func (c *Connection) Close() (err error) {
 	return nil
 }
 
+// Runs a SQL connection on the server.
+//
+// If the query succeeds, the resultset will be returned as the first return value.
+// When the server returns an error response, this will be returned as the second
+// return value.
+//
+// If a connection occurs, the state of the connection is undeterministic, so
+// the connection will be closed, and the connection error will be returned as
+// the second return value. The connection will automatically try to reconnect
+// if you try to use it for a query again.
 func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) {
 	c.l.Lock()
 	defer c.l.Unlock()
@@ -86,6 +112,7 @@ func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) 
 	for msg := c.receiveMessage(); !c.isReadyForQuery(msg); msg = c.receiveMessage() {
 		switch msg := msg.(type) {
 		case EmptyQueryMessage, ErrorResponseMessage:
+			resultset = nil
 			queryError = msg.(error)
 
 		case RowDescriptionMessage:
@@ -104,6 +131,8 @@ func (c *Connection) Query(sql string) (resultset *Resultset, queryError error) 
 	return
 }
 
+// Handles any message from the server that falls outside the stateful parts of
+// the protocol.
 func (c *Connection) handleStatelessMessage(msg IncomingMessage) {
 	switch msg := msg.(type) {
 	case ParameterStatusMessage:
@@ -114,10 +143,12 @@ func (c *Connection) handleStatelessMessage(msg IncomingMessage) {
 		c.backendKey = msg.Key
 
 	default:
-		panic(fmt.Sprintf("Unexpected message: %#+v", msg))
+		panic(fmt.Errorf("Unexpected message: %#+v", msg))
 	}
 }
 
+// Opens the TCP socket, and optionally initializes the TLS encryption on it.
+// This function will panic if something goes wrong when connecting.
 func (c *Connection) openConnection() {
 	if socket, dialError := net.Dial("tcp", c.config.Address); dialError != nil {
 		panic(dialError)
@@ -141,10 +172,12 @@ func (c *Connection) openConnection() {
 		}
 	}
 
-	c.initConnection()
+	c.authenticateConnection()
 }
 
-func (c *Connection) initConnection() {
+// Initializes the connection by doing the initial authenentication message
+// This function will panic when skmething goes wrong while connecting.
+func (c *Connection) authenticateConnection() {
 	c.sendMessage(StartupMessage{User: c.config.User, Database: c.config.Database})
 
 	for msg := c.receiveMessage(); !c.isReadyForQuery(msg); msg = c.receiveMessage() {
@@ -169,6 +202,8 @@ func (c *Connection) initConnection() {
 	return
 }
 
+// Checks whether the message from the server is a ReadyForQuery (Z)
+// message. If so, the transaction status for the connection is set.
 func (c *Connection) isReadyForQuery(msg IncomingMessage) bool {
 	typeMsg, ok := msg.(ReadyForQueryMessage)
 	if ok {
@@ -177,6 +212,9 @@ func (c *Connection) isReadyForQuery(msg IncomingMessage) bool {
 	return ok
 }
 
+// Resets the connection. This will try to close the socket connection
+// if it still exists, and will reset all the connection status variables
+// to their default vaules.
 func (c *Connection) resetConnection() {
 	if c.socket != nil {
 		c.socket.Close()
@@ -189,23 +227,34 @@ func (c *Connection) resetConnection() {
 	c.transactionStatus = 0
 }
 
+// Send a message to the server.
+//
+// This method will log the message to the TrafficLogger if the
+// Traffic logger is set to a logger instance.
 func (c *Connection) sendMessage(msg OutgoingMessage) {
-	err := SendMessage(c.socket, msg)
+	err := sendMessage(c.socket, msg)
 	if err != nil {
 		panic(err)
 	}
+
 	if TrafficLogger != nil {
 		TrafficLogger.Printf("=> %#+v\n", msg)
 	}
 }
 
+// Receive a message from the server.
+//
+// This method will log the message to the TrafficLogger if the
+// Traffic logger is set to a logger instance.
 func (c *Connection) receiveMessage() IncomingMessage {
-	msg, err := ReadMessage(c.socket)
+	msg, err := receiveMessage(c.socket)
 	if err != nil {
 		panic(err)
 	}
+
 	if TrafficLogger != nil {
 		TrafficLogger.Printf("<= %#+v", msg)
 	}
+
 	return msg
 }

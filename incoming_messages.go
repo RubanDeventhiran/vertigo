@@ -221,7 +221,7 @@ var messageFactoryMethods = map[byte]messageFactoryMethod{
 	'D': parseDataRowMessage,
 }
 
-func ReadMessage(r io.Reader) (message IncomingMessage, err error) {
+func receiveMessage(r io.Reader) (message IncomingMessage, err error) {
 	var (
 		messageType byte
 		messageSize uint32
