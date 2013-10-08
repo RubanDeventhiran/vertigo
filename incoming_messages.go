@@ -72,7 +72,6 @@ func (msg EmptyQueryMessage) Severity() string {
 	return "ERROR"
 }
 
-
 type AuthenticationRequestMessage struct {
 	AuthCode uint32
 	Salt     []byte
