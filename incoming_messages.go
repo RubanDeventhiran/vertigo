@@ -9,6 +9,11 @@ import (
 	"io"
 )
 
+type ErrorResponse interface {
+	Error() string
+	Code() string
+}
+
 type IncomingMessage interface{}
 
 type ErrorResponseMessage struct {
@@ -45,6 +50,10 @@ func (msg ErrorResponseMessage) Code() string {
 	return msg.Fields['C']
 }
 
+func (msg ErrorResponseMessage) Severity() string {
+	return msg.Fields['S']
+}
+
 type EmptyQueryMessage struct{}
 
 func parseEmptyQueryMessage(reader *bufio.Reader) (IncomingMessage, error) {
@@ -54,6 +63,15 @@ func parseEmptyQueryMessage(reader *bufio.Reader) (IncomingMessage, error) {
 func (msg EmptyQueryMessage) Error() string {
 	return "The provided SQL string was empty"
 }
+
+func (msg EmptyQueryMessage) Code() string {
+	return ""
+}
+
+func (msg EmptyQueryMessage) Severity() string {
+	return "ERROR"
+}
+
 
 type AuthenticationRequestMessage struct {
 	AuthCode uint32
