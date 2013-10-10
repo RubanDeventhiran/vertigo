@@ -9,9 +9,14 @@ import (
 	"io"
 )
 
+type ErrorResponse interface {
+	Error() string
+	Code() string
+}
+
 type IncomingMessage interface{}
 
-type ErrorResponseMessage struct{
+type ErrorResponseMessage struct {
 	Fields map[byte]string
 }
 
@@ -41,10 +46,30 @@ func (msg ErrorResponseMessage) Error() string {
 	return fmt.Sprintf("Vertica %s %s: %s", msg.Fields['S'], msg.Fields['C'], msg.Fields['M'])
 }
 
+func (msg ErrorResponseMessage) Code() string {
+	return msg.Fields['C']
+}
+
+func (msg ErrorResponseMessage) Severity() string {
+	return msg.Fields['S']
+}
+
 type EmptyQueryMessage struct{}
 
 func parseEmptyQueryMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	return EmptyQueryMessage{}, nil
+}
+
+func (msg EmptyQueryMessage) Error() string {
+	return "The provided SQL string was empty"
+}
+
+func (msg EmptyQueryMessage) Code() string {
+	return ""
+}
+
+func (msg EmptyQueryMessage) Severity() string {
+	return "ERROR"
 }
 
 type AuthenticationRequestMessage struct {
@@ -167,7 +192,6 @@ func parseRowDescriptionMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	return msg, nil
 }
 
-
 type DataRowMessage struct {
 	Values []interface{}
 }
@@ -200,8 +224,6 @@ func parseDataRowMessage(reader *bufio.Reader) (IncomingMessage, error) {
 	return msg, nil
 }
 
-
-
 type messageFactoryMethod func(reader *bufio.Reader) (IncomingMessage, error)
 
 var messageFactoryMethods = map[byte]messageFactoryMethod{
@@ -216,7 +238,7 @@ var messageFactoryMethods = map[byte]messageFactoryMethod{
 	'D': parseDataRowMessage,
 }
 
-func ReadMessage(r io.Reader) (message IncomingMessage, err error) {
+func receiveMessage(r io.Reader) (message IncomingMessage, err error) {
 	var (
 		messageType byte
 		messageSize uint32

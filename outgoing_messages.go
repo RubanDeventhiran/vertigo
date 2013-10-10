@@ -69,7 +69,7 @@ func (m QueryMessage) Encode(buffer *bytes.Buffer) (byte, error) {
 	return 'Q', err
 }
 
-func SendMessage(w io.Writer, m OutgoingMessage) error {
+func sendMessage(w io.Writer, m OutgoingMessage) error {
 	buffer := new(bytes.Buffer)
 	messageType, encodeErr := m.Encode(buffer)
 	if encodeErr != nil {
